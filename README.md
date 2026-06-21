@@ -27,6 +27,15 @@ editor, it has to **re-emit every line verbatim**. That fails two ways at once:
 agent passes line numbers and a short anchor substring, and `span` transfers the
 bytes itself, byte-exact, regardless of the size of the block.
 
+## Non-goals
+
+`span` deliberately does not author new text or replace content, rename,
+search-and-replace, batch multiple ops, address sub-line/columns, or expose any
+JSON interface. (Deleting a span **by reference** — `span move … --force` with no
+destination — *is* supported, since it carries coordinates not content; authoring
+and replacement remain out of scope.) Its purpose is to relocate, duplicate, and
+delete existing lines faithfully with minimal impact on session context.
+
 The purpose of this tool is not to replace the a general-purpose edit tools. It
 is meant for specific circumstances where the general-purpose edit tools are the
 wrong tool for the job.
@@ -76,8 +85,8 @@ wrong tool for the job.
   and reinserts it nowhere — deleting a large block by coordinate instead of
   re-emitting it into the editor's `old_string`. `--force` is the sole trigger and
   an explicit acknowledgment; it rejects any destination supplied alongside it and
-  never weakens the guard checks. `copy` has no such form. This is the one deletion `span` does, and it is on-thesis: it carries
-  coordinates, not content.
+  never weakens the guard checks. `copy` has no such form. This is the one deletion
+  `span` does, and it is on-thesis: it carries coordinates, not content.
 
 See `SPEC.md` for the complete specification.
 
@@ -90,7 +99,7 @@ See `SPEC.md` for the complete specification.
 `span-guard` because the hook (below) invokes it by bare name. Where you put
  them is your choice.
 
-Build the source (requires a Rust toolchain, edition 2024):
+### Build the source (requires a Rust toolchain, edition 2024):
 
 ```sh
 cargo build --release
@@ -98,14 +107,119 @@ cargo build --release
 # → target/release/span-guard   (the optional Claude Code hook, see below)
 ```
 
-Then copy both into a directory in your `PATH`:
+### Copy both binaries into a directory in your `PATH`:
 
 ```sh
 install -m 755 target/release/span target/release/span-guard /usr/local/bin/
 # …or ~/.local/bin, ~/bin — wherever you keep CLI tools
 ```
 
-## Usage
+### Add the instructions to `AGENTS.md`
+
+Paste the block below into your `AGENTS.md`. It stands on its own and works
+whether or not the hook is installed (the hook just backstops it):
+
+````markdown
+## Relocating or duplicating existing lines → use `span`, don't re-emit
+
+When you are **moving or duplicating a block of existing lines** — especially a
+large block, or one crossing files — do **not** re-emit the lines through the
+string-replace editor (`Edit`/`Write`/`MultiEdit`); use `span` instead.
+
+Address **each** endpoint — `from`, `to`, and the destination — by a
+**distinctive `--*-guard` substring** of its line (a long, unique substring, not a
+short fragment); you don't supply line numbers. A guard must match exactly one line
+or `span` fails loud, so for a **low-entropy line** (a bare `}`, a repeated flag)
+add a `--*-context <offset:substr>` neighbor (split on the first `:`; `offset` is
+signed, negative = a line above). The moved span `[from, to]` is **inclusive**.
+Land it `--before` or `--after` the destination line — to land at the **end** of a
+file, guard its last line and use `--after`; for the **top** of a file (or an
+empty file, which has no line to guard) use `--dest 0 --after`.
+
+**Move** existing lines to a new location (source is removed):
+
+```sh
+span move src.rs \
+  --from-guard 'fn parse' \
+  --to-guard   '}' --to-context '-1:return result' \
+  --dest-guard 'mod tests' --after
+```
+
+**Copy** existing lines to a new location (source is kept); cross-file shown
+here with `--dest-file`:
+
+```sh
+span copy lib.rs \
+  --from-guard 'fn parse_ok' \
+  --to-guard   '}' --to-context '-1:assert!(run' \
+  --dest-guard 'mod tests' --after \
+  --dest-file tests.rs
+```
+
+For authoring new text or replacing content, keep using the normal string editor.
+````
+
+### Create a Claude Code hook (optional)
+
+Add the hook to your `settings.json` and provide permission to run it:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "span-guard"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": ["Bash(span:*)"]
+  }
+}
+```
+
+The `span-guard` command must be on the agent's `PATH`. The `Bash(span:*)` permission
+entry removes the per-call approval prompt, so the redirect to `span` never stalls.
+
+`span` is driven entirely by an agent through its shell, so two pieces make
+adoption reliable: a **hook** (deterministic backstop) and an **instructions
+block** (so the agent reaches for `span` proactively). Use either or both
+(both is recommended).
+
+`span-guard` is a `PreToolUse` hook that watches the editing tools and detects the
+move/duplicate tell. It has exactly **two outcomes** — **deny** or **silent
+allow** — keyed on block size and direction:
+
+- a **large inserted** block (≥ 5 lines) with a verbatim twin → **deny**, handing
+  back a pre-assembled `span move` command with the discovered source coordinates
+  (plus an auto `--*-context` neighbor when an endpoint guard would be ambiguous,
+  so the model's first run resolves cleanly);
+- a **large deleted** block (≥ 10 lines) → **deny** with a *fork* — `span move …
+  --dest …` to relocate, or `span move … --force` to delete by reference — with
+  **no twin required** (delete-first order hides the twin). The deletion bar is
+  higher than the insertion bar because plain deletions are common, and a false
+  deny costs only one needless interruption with a documented escape (`--force`);
+- anything else → **silent allow**.
+
+There is **no soft "reminder" outcome.** A per-edit nudge would spend the very
+context `span` exists to conserve; the proactive "prefer `span`" habit lives in
+`AGENTS.md` (below), and the hook stays a pure hard backstop.
+
+Twin matching is **byte-exact** — a near-miss is not a relocation tell — which is
+what lets the insertion deny be a hard gate without blocking legitimate rewrites.
+
+It **fails open**: any malformed input or error exits `0` with no output, so
+editing is never broken.
+
+---
+
+## CLI Reference
 
 `span` is designed to be run by your AI agent (e.g., Claude Code). However,
 it can also be run manually if needed.
@@ -186,7 +300,7 @@ span copy lib.rs \
   --dest-file tests.rs
 ```
 
-## Batching span ops — address by guard, skip the renumber
+### Batching span ops — address by guard, skip the renumber
 
 `span` transfers bytes by reference to save context; re-reading a file after each
 move just to recover shifted line numbers throws that savings away. The simplest
@@ -249,127 +363,3 @@ error: 3 coordinates failed:
   --dest	drift: anchor "fn other" resolved at line 7, not 5 (retry with --dest 7)
 ```
 
----
-
-## Claude Code integration
-
-`span` is driven entirely by an agent through its shell, so two pieces make
-adoption reliable: a **hook** (deterministic backstop) and an **instructions
-block** (so the agent reaches for `span` proactively). Use either or both
-(both is recommended).
-
-### 1. The `span-guard` hook
-
-`span-guard` is a `PreToolUse` hook that watches the editing tools and detects the
-move/duplicate tell. It has exactly **two outcomes** — **deny** or **silent
-allow** — keyed on block size and direction:
-
-- a **large inserted** block (≥ 5 lines) with a verbatim twin → **deny**, handing
-  back a pre-assembled `span move` command with the discovered source coordinates
-  (plus an auto `--*-context` neighbor when an endpoint guard would be ambiguous,
-  so the model's first run resolves cleanly);
-- a **large deleted** block (≥ 10 lines) → **deny** with a *fork* — `span move …
-  --dest …` to relocate, or `span move … --force` to delete by reference — with
-  **no twin required** (delete-first order hides the twin). The deletion bar is
-  higher than the insertion bar because plain deletions are common, and a false
-  deny costs only one needless interruption with a documented escape (`--force`);
-- anything else → **silent allow**.
-
-There is **no soft "reminder" outcome.** A per-edit nudge would spend the very
-context `span` exists to conserve; the proactive "prefer `span`" habit lives in
-`CLAUDE.md` (below), and the hook stays a pure hard backstop.
-
-Twin matching is **byte-exact** — a near-miss is not a relocation tell — which is
-what lets the insertion deny be a hard gate without blocking legitimate rewrites.
-
-It **fails open**: any malformed input or error exits `0` with no output, so
-editing is never broken.
-
-Add the hook to your `settings.json` and provide permission to run it:
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Edit|Write|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "span-guard"
-          }
-        ]
-      }
-    ]
-  },
-  "permissions": {
-    "allow": ["Bash(span:*)"]
-  }
-}
-```
-
-The `span-guard` command must be on the agent's `PATH`. The `Bash(span:*)` permission
-entry removes the per-call approval prompt, so the redirect to `span` never stalls.
-
-### 2. Suggested `AGENTS.md` (or `CLAUDE.md`) instructions
-
-Paste the block below into your project's `AGENTS.md` / `CLAUDE.md`. It stands on
-its own and works **whether or not** the hook is installed — the hook just
-backstops it:
-
-````markdown
-## Relocating or duplicating existing lines → use `span`, don't re-emit
-
-When you are **moving or duplicating a block of existing lines** — especially a
-large block, or one crossing files — do **not** re-emit the lines through the
-string-replace editor (`Edit`/`Write`/`MultiEdit`); use `span` instead.
-
-Address **each** endpoint — `from`, `to`, and the destination — by a
-**distinctive `--*-guard` substring** of its line (a long, unique substring, not a
-short fragment); you don't supply line numbers. A guard must match exactly one line
-or `span` fails loud, so for a **low-entropy line** (a bare `}`, a repeated flag)
-add a `--*-context <offset:substr>` neighbor (split on the first `:`; `offset` is
-signed, negative = a line above). The moved span `[from, to]` is **inclusive**.
-Land it `--before` or `--after` the destination line — to land at the **end** of a
-file, guard its last line and use `--after`; for the **top** of a file (or an
-empty file, which has no line to guard) use `--dest 0 --after`.
-
-**Move** existing lines to a new location (source is removed):
-
-```sh
-span move src.rs \
-  --from-guard 'fn parse' \
-  --to-guard   '}' --to-context '-1:return result' \
-  --dest-guard 'mod tests' --after
-```
-
-**Copy** existing lines to a new location (source is kept); cross-file shown
-here with `--dest-file`:
-
-```sh
-span copy lib.rs \
-  --from-guard 'fn parse_ok' \
-  --to-guard   '}' --to-context '-1:assert!(run' \
-  --dest-guard 'mod tests' --after \
-  --dest-file tests.rs
-```
-
-For authoring new text or replacing content, keep using the normal string editor.
-````
-
-> **Deliberate omission.** The forced delete-by-reference form (`span move …
-> --force`, see SPEC §6) is intentionally **left out** of the block above.
-> Advertising it on every turn would reintroduce the standing per-turn context
-> cost `span` exists to avoid; the `span-guard` hook surfaces it exactly when it is
-> needed — on a large editor deletion — and nowhere else.
-
----
-
-## Non-goals
-
-`span` deliberately does not author new text or replace content, rename,
-search-and-replace, batch multiple ops, address sub-line/columns, or expose any
-JSON interface. (Deleting a span **by reference** — `span move … --force` with no
-destination — *is* supported, since it carries coordinates not content; authoring
-and replacement remain out of scope.) Its purpose is to relocate, duplicate, and
-delete existing lines faithfully with minimal impact on session context.
