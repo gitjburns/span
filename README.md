@@ -114,10 +114,11 @@ install -m 755 target/release/span target/release/span-guard /usr/local/bin/
 # …or ~/.local/bin, ~/bin — wherever you keep CLI tools
 ```
 
-### Add the instructions to `AGENTS.md`
+### Add agent instructions
 
-Paste the block below into your `AGENTS.md`. It stands on its own and works
-whether or not the hook is installed (the hook just backstops it):
+Paste the block below into your agent instructions file (e.g.
+`~/.claude/CLAUDE.md`).  It stands on its own and works whether or not the hook
+is installed (the hook just backstops it):
 
 ````markdown
 ## Relocating or duplicating existing lines → use `span`, don't re-emit
