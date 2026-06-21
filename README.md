@@ -2,7 +2,7 @@
 
 `span` is a small, stateless CLI tool for AI agents. It contains exactly two
 verbs — `span move` and `span copy` that relocate or duplicate a block of existing
-lines, intra-file or across files, addressed by line number. It does this without
+lines, intra-file or across files, addressed by reference. It does this without
 the text being read and written by the non-deterministic LLM, saving your context
 and ensuring a faithful byte-level copy of large blocks of text within a file or
 between multiple files.
@@ -24,8 +24,8 @@ editor, it has to **re-emit every line verbatim**. That fails two ways at once:
 
 `span` removes the bytes from the agent's hands entirely. Relocation of the text
  is done by an external tool that carries **coordinates instead of content**: the
-agent passes line numbers and a short anchor substring, and `span` transfers the
-bytes itself, byte-exact, regardless of the size of the block.
+agent passes a short anchor substring, and `span` transfers the bytes itself,
+byte-exact, regardless of the size of the block.
 
 ## Non-goals
 
